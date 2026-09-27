@@ -120,6 +120,32 @@ pub extern "C" fn user_main(argc: isize, argv: *const *const u8) -> i32 {
     };
     outln(b"[consoled] both ends open; serving");
 
+    // ---- getty 清积压（getty/login 的 tcflush(TCIFLUSH) 同构，2026-09-27）----
+    // 失败模式（S20）：login 尚未启动时用户按键会积压在事件环（无读者消费）。
+    // consoled 首次服务若照单全收转发进实例环，login 起来后**整段积压一次性
+    // 重放**——用户见「按键没反应→重按→开机后回显成串重复」（实测复现：
+    // login 前键入 rrrooo，login 提示出现后回显 rr/rrr/…/rrrooo 逐次重绘）。
+    // Unix 同构语义：getty 打开 tty 时清输入缓冲——登录提示之前的按键不算数。
+    // 实现：非阻塞排空事件环、**直接丢弃**（不转换、不写环）。仅推进本读者
+    // 游标（广播模型），不碰其他实例/读者（S15：清的是「本实例的输入历史」）。
+    // respawn 场景同语义：新守护接管时，守护空窗期的按键一并作废（与 tty
+    // respawn 后 getty flush 行为一致）。读空即止（WouldBlock = 环已空）。
+    {
+        let mut scratch = [0u8; 128];
+        let mut flushed: usize = 0;
+        loop {
+            match libsys::read_nonblocking_take(ev.raw_fd(), &mut scratch) {
+                Ok(0) => break,
+                Ok(n) => flushed += n,
+                Err(libsys::Error::WouldBlock) => break,
+                Err(_) => break,
+            }
+        }
+        if flushed > 0 {
+            outln(b"[consoled] flushed stale input backlog (pre-login keystrokes)");
+        }
+    }
+
     let mut raw = alloc::vec::Vec::new();
     let mut bytes_out = alloc::vec::Vec::new();
     // keymap 修饰键状态机跨轮持有（Shift 按下→抬起可能分属两轮——
