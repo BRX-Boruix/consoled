@@ -61,9 +61,47 @@ fn out_u64(mut v: u64) {
     out(&buf[i..]);
 }
 
+/// 解析 argv[0] 为实例 id（十进制；无 argv = 0——兼容既有 spawn 形态）。
+/// 非法（非数字/负号/超长）如实拒绝返回 None，由调用方装配失败退出——
+/// 绝不静默夹到实例 0（S09/S17：错误的实例号 = 写错终端，比死更糟）。
+fn parse_instance(argc: isize, argv: *const *const u8) -> Option<usize> {
+    if argc <= 0 || argv.is_null() {
+        return Some(0);
+    }
+    // SAFETY: argc>=1 且 argv 由内核 exec 路径按 C 数组构造（NUL 结尾，
+    // init/src/main.rs 同款访问形态）。
+    let p = unsafe { *argv } ;
+    if p.is_null() {
+        return Some(0);
+    }
+    let mut n: usize = 0;
+    let mut i = 0isize;
+    let mut any = false;
+    unsafe {
+        while *p.offset(i) != 0 {
+            let c = *p.offset(i);
+            if c < b'0' || c > b'9' {
+                return None;
+            }
+            n = n.checked_mul(10)?.checked_add((c - b'0') as usize)?;
+            any = true;
+            i += 1;
+        }
+    }
+    if !any { return None; }
+    Some(n)
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn user_main(_argc: isize, _argv: *const *const u8) -> i32 {
-    outln(b"[consoled] starting (events -> keymap -> /devices/console)");
+pub extern "C" fn user_main(argc: isize, argv: *const *const u8) -> i32 {
+    let instance = match parse_instance(argc, argv) {
+        Some(v) => v,
+        None => {
+            outln(b"[consoled] FATAL: bad instance id in argv");
+            return 1;
+        }
+    };
+    outln(b"[consoled] starting (events -> keymap -> console instance)");
 
     // ---- 装配：两个端都必须成功；任一失败 = 装配错误，如实退出（S09）----
     let mut ev = match EventSourceReader::open() {
@@ -73,10 +111,10 @@ pub extern "C" fn user_main(_argc: isize, _argv: *const *const u8) -> i32 {
             return 1;
         }
     };
-    let con = match ConsoleWriter::open() {
+    let con = match ConsoleWriter::open_instance(instance) {
         Ok(w) => w,
         Err(_) => {
-            outln(b"[consoled] FATAL: open(/devices/console) failed");
+            outln(b"[consoled] FATAL: open console write end failed (instance above)");
             return 1;
         }
     };
