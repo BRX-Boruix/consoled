@@ -1,35 +1,31 @@
 # consoled
 
-BORUIX's **terminal byte producer daemon**: it reads the keyboard event stream, converts it into bytes, and writes them to the console device.
+BORUIX's console daemon: turns the keyboard event stream into bytes and writes them to the console device.
 
 [简体中文](README.md)
 
-## The data path
+Started by the system init process at boot; runs for the lifetime of the system. Takes no arguments.
+
+## What it does
 
 ```
-keyboard event stream → keymap (to bytes) → console device
+/devices/input/events → key decoding → /devices/console
 ```
 
-The process is a **resident daemon**: no arguments, never exits (it exits only if assembly fails).
+- Reads the keyboard event stream and converts it to a byte stream through the key map
+- Tracks modifier keys: Shift, Ctrl and Alt state survives across event batches
+- Converted bytes enter the console, where terminal sessions read them
 
-## Why the conversion lives in user space
+## Behaviour
 
-The keymap is **policy, not mechanism**. The kernel's standard input keeps a **raw byte stream**, and layout, escaping, and control-key folding all move up into this process. Changing the mapping rules then requires no kernel change.
+- On startup it drains keystrokes accumulated in the event stream: keys typed before the login prompt appears do not count
+- When the console buffer is full the remaining bytes are dropped and counted, never retried — typing is far slower than the buffer drains, so pile-up only happens when no reader exists
+- Once every 256 events it prints one statistics line: events processed, bytes written, bytes dropped
 
-## Behaviour on failure
+## Known limitations
 
-| Situation | Handling |
-| --- | --- |
-| The event stream or console cannot be opened | Report honestly and **exit non-zero** (an assembly error, not silent) |
-| The event read returns the "try again later" sentinel | **Carry on unchanged** — it is a retry signal, neither an error nor end of file |
-| The console buffer is full | **Discard the remaining bytes and count them**; **never retry** |
-| Any other read error | Report honestly and exit — a broken ring is a kernel defect and soldiering on is pointless |
-
-**"Never retry" deserves a note**: this process is single-threaded. A full buffer means the reader has not consumed anything for 100 ms or more — and human typing is far slower than the drain rate of a 4 KiB ring, so that shape appears only when **there is no reader**. Retrying in place would then **starve the event-reading side**, to the point of not receiving keyboard input at all. Discarding and counting is the only choice that does not deadlock itself.
-
-## Observability
-
-Every 256 events it prints one line of statistics to the serial port, including the discard count, so the state can be observed without interrupting operation.
+- The key map is fixed; there are no loadable layouts
+- The instance id comes from the command line and defaults to 0; an invalid instance id refuses to start
 
 ## Building
 
@@ -37,24 +33,22 @@ Every 256 events it prints one line of statistics to the serial port, including 
 cargo build --release
 ```
 
-Started by the system init process at boot, then resident.
-
-## Layout
+## Repository layout
 
 ```
 consoled/
-├── Cargo.toml    # package definition
+├── Cargo.toml    # package manifest
 ├── build.rs      # injects the linker script
-├── linker.ld     # user-space section layout
+├── linker.ld     # user-space segment layout
 └── src/
-    └── main.rs   # event reading, conversion, and writing
+    └── main.rs   # event reading, key decoding, console writing
 ```
 
 ## Related projects
 
-- [`consoled-e2e`](https://github.com/BRX-Boruix/consoled-e2e) — end-to-end acceptance for the console byte ring
-- [`libsys`](https://github.com/BRX-Boruix/libsys) — provides the event reading and keymap interfaces
-- [`libline`](https://github.com/BRX-Boruix/libline) — provides the event source component
+- [`libsys`](https://github.com/BRX-Boruix/libsys) — event reading and key decoding
+- [`login`](https://github.com/BRX-Boruix/login) — consumer of the login prompt
+- [`shell`](https://github.com/BRX-Boruix/shell) — terminal session for the console bytes
 
 ## License
 
