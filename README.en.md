@@ -13,7 +13,7 @@ Started by the system init process at boot; runs for the lifetime of the system.
 ```
 
 - Reads the keyboard event stream and converts it to a byte stream through the key map
-- Tracks modifier keys: Shift, Ctrl and Alt state survives across event batches
+- Tracks modifier keys: Shift, Ctrl and Alt may be pressed and released across separate reads, with the state preserved
 - Converted bytes enter the console, where terminal sessions read them
 
 ## Behaviour
