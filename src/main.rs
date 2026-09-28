@@ -146,8 +146,12 @@ pub extern "C" fn user_main(argc: isize, argv: *const *const u8) -> i32 {
         }
     }
 
-    let mut raw = alloc::vec::Vec::new();
-    let mut bytes_out = alloc::vec::Vec::new();
+    // 容量预分配（S33 量化上界）：单次事件 read ≤ 8 条记录（128B，
+    // EventSourceReader.buf 上界），decode 输出同源有界——256B 预留
+    // 覆盖峰值两倍。避免热循环里 clear+增长反复触发 realloc 碎片
+    // （多实例长跑下曾助推用户堆碎片化 → OOM）。
+    let mut raw = alloc::vec::Vec::with_capacity(256);
+    let mut bytes_out = alloc::vec::Vec::with_capacity(256);
     // keymap 修饰键状态机跨轮持有（Shift 按下→抬起可能分属两轮——
     // decode_into 状态存活的契约，libsys 宿主测试钉过）。
     let mut keymap = KeymapState::default();
